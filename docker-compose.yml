@@ -1,0 +1,236 @@
+# Nutmeals — Complete Microservices Docker Compose
+#
+# Services:
+#   Infrastructure : postgres (16), redis (7)
+#   api-gateway    : port 8000 — single client entry point
+#   user-service   : port 8005
+#   meal-service   : port 8006
+#   order-service  : port 8001
+#   payment-service: port 8002
+#   notification-service: port 8003
+#   delivery-service: port 8004
+#   admin-service  : port 8007
+#
+# Quick start:
+#   docker compose up --build
+#   docker compose exec admin-service python scripts/seed_superadmin.py
+
+version: "3.9"
+
+x-common-env: &common-env
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: super_secret_jwt_key_change_in_production
+  JWT_ALGORITHM: HS256
+  ENVIRONMENT: local
+  DEBUG: "true"
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: kanni3750
+      POSTGRES_DB: nutmeals_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-dbs.sql:/docker-entrypoint-initdb.d/init-dbs.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Application services ──────────────────────────────────────────────────
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: api-gateway
+      ORDER_SERVICE_URL: http://order-service:8001
+      PAYMENT_SERVICE_URL: http://payment-service:8002
+      NOTIFICATION_SERVICE_URL: http://notification-service:8003
+      DELIVERY_SERVICE_URL: http://delivery-service:8004
+      USER_SERVICE_URL: http://user-service:8005
+      MEAL_SERVICE_URL: http://meal-service:8006
+      RATE_LIMIT_MAX_REQUESTS: "100"
+      RATE_LIMIT_WINDOW_SECONDS: "60"
+      CORS_ORIGINS: "*"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: order-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: user-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: "30"
+      USER_CACHE_TTL: "300"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  meal-service:
+    build:
+      context: ./meal-service
+      dockerfile: Dockerfile
+    ports:
+      - "8006:8006"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: meal-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      MEAL_CACHE_TTL: "600"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: payment-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      PAYMENT_PROVIDER: juspay
+      JUSPAY_API_KEY: ${JUSPAY_API_KEY:-}
+      JUSPAY_MERCHANT_ID: ${JUSPAY_MERCHANT_ID:-}
+      JUSPAY_BASE_URL: ${JUSPAY_BASE_URL:-https://sandbox.juspay.in}
+      JUSPAY_WEBHOOK_SECRET: ${JUSPAY_WEBHOOK_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: notification-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      WHATSAPP_PROVIDER: twilio
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-whatsapp:+14155238886}
+      SUBSCRIBED_CHANNELS: ORDER_CREATED,PAYMENT_SUCCESS,DELIVERY_ASSIGNED
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  delivery-service:
+    build:
+      context: ./delivery-service
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: delivery-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      HOME_DELIVERY_RADIUS_KM: "15.0"
+      HOME_DELIVERY_BASE_ETA_MINUTES: "40"
+      PICKUP_BASE_ETA_MINUTES: "10"
+      RESTAURANT_LAT: "13.0827"
+      RESTAURANT_LON: "80.2707"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  admin-service:
+    build:
+      context: ./admin-service
+      dockerfile: Dockerfile
+    ports:
+      - "8007:8007"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: admin-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      JWT_SECRET: ${ADMIN_JWT_SECRET:-change_me_admin_super_secret_key}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
+      USER_SERVICE_URL: http://user-service:8005
+      ORDER_SERVICE_URL: http://order-service:8001
+      PAYMENT_SERVICE_URL: http://payment-service:8002
+      NOTIFICATION_SERVICE_URL: http://notification-service:8003
+      DELIVERY_SERVICE_URL: http://delivery-service:8004
+      MEAL_SERVICE_URL: http://meal-service:8006
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-change_me_internal}
+      DOWNSTREAM_TIMEOUT: "15.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
