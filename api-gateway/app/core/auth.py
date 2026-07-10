@@ -22,7 +22,15 @@ PUBLIC_PATHS: set[str] = {
     "/docs",
     "/openapi.json",
     "/redoc",
+    
+    # User authentication
+    "/api/v1/users/register",
+    "/api/v1/users/login",
+    "/api/v1/users/refresh"
+
+
     # Webhook endpoints must NOT require auth (called by third parties)
+
     "/api/v1/payments/webhook",
 }
 

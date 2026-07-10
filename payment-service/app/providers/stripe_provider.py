@@ -1,40 +1,66 @@
-"""Stripe payment provider — placeholder implementation.
-
-Activate by:
-  1. pip install stripe
-  2. Set PAYMENT_PROVIDER=stripe and STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET in .env
-  3. Implement the methods below following the Stripe API docs.
 """
+Stripe payment provider.
+
+This is currently a placeholder implementation.
+Activate by:
+
+1. pip install stripe
+2. PAYMENT_PROVIDER=stripe
+3. Configure STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET
+"""
+
 from __future__ import annotations
 
-import json
-import logging
+from decimal import Decimal
 from typing import Any
 
-from app.providers.base import PaymentProvider, PaymentResult, WebhookResult
-
-logger = logging.getLogger(__name__)
+from app.providers.base import (
+    PaymentProvider,
+    PaymentResult,
+    RefundResult,
+    SettlementResult,
+    WebhookResult,
+)
 
 
 class StripeProvider(PaymentProvider):
-    """Placeholder Stripe adapter — implement when Stripe is needed."""
 
     def get_name(self) -> str:
         return "stripe"
 
-    async def create_payment(self, data: dict[str, Any]) -> PaymentResult:
-        # TODO: implement using `stripe.PaymentIntent.create()`
-        # import stripe
-        # stripe.api_key = settings.STRIPE_SECRET_KEY
-        # intent = await stripe.PaymentIntent.acreate(amount=..., currency="inr", ...)
+    async def create_payment(
+        self,
+        data: dict[str, Any],
+    ) -> PaymentResult:
         raise NotImplementedError(
-            "StripeProvider.create_payment is not yet implemented. "
-            "See the docstring for activation steps."
+            "Stripe payment creation is not implemented."
         )
 
     async def verify_webhook(
-        self, headers: dict[str, str], body: bytes
+        self,
+        headers: dict[str, str],
+        body: bytes,
     ) -> WebhookResult:
-        # TODO: implement using stripe.Webhook.construct_event()
-        # event = stripe.Webhook.construct_event(body, sig_header, settings.STRIPE_WEBHOOK_SECRET)
-        raise NotImplementedError("StripeProvider.verify_webhook is not yet implemented.")
+        raise NotImplementedError(
+            "Stripe webhook verification is not implemented."
+        )
+
+    async def refund(
+        self,
+        payment_id: str,
+        amount: Decimal,
+        reason: str | None = None,
+    ) -> RefundResult:
+        raise NotImplementedError(
+            "Stripe refunds are not implemented."
+        )
+
+    async def fetch_settlements(
+        self,
+    ) -> list[SettlementResult]:
+        raise NotImplementedError(
+            "Stripe settlements are not implemented."
+        )
+
+    async def health_check(self) -> bool:
+        return False

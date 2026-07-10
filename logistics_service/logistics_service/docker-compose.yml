@@ -1,0 +1,96 @@
+version: "3.9"
+
+# Local dev stack for the Logistics Service. In the broader nut_meals
+# microservices setup this file is one member of a shared docker-compose
+# network alongside orders/inventory/messaging services; adjust the
+# `nut_meals_net` external network name to match your root compose setup.
+
+services:
+  logistics-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nut-meals/logistics-service:local
+    ports:
+      - "8003:8000"
+    env_file: .env
+    environment:
+      LOGISTICS_DATABASE_URL: postgresql+asyncpg://logistics:logistics@logistics-db:5432/logistics
+      LOGISTICS_REDIS_URL: redis://logistics-redis:6379/0
+      LOGISTICS_CELERY_BROKER_URL: redis://logistics-redis:6379/1
+      LOGISTICS_CELERY_RESULT_BACKEND: redis://logistics-redis:6379/2
+      LOGISTICS_ENVIRONMENT: development
+      LOGISTICS_ENFORCE_HTTPS: "false"
+    depends_on:
+      logistics-db:
+        condition: service_healthy
+      logistics-redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    networks:
+      - nut_meals_net
+
+  logistics-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: nut-meals/logistics-worker:local
+    env_file: .env
+    environment:
+      LOGISTICS_DATABASE_URL: postgresql+asyncpg://logistics:logistics@logistics-db:5432/logistics
+      LOGISTICS_REDIS_URL: redis://logistics-redis:6379/0
+      LOGISTICS_CELERY_BROKER_URL: redis://logistics-redis:6379/1
+      LOGISTICS_CELERY_RESULT_BACKEND: redis://logistics-redis:6379/2
+    depends_on:
+      logistics-db:
+        condition: service_healthy
+      logistics-redis:
+        condition: service_started
+    networks:
+      - nut_meals_net
+
+  logistics-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: nut-meals/logistics-worker:local
+    command: ["celery", "-A", "app.core.celery_app.celery_app", "beat", "--loglevel=INFO"]
+    env_file: .env
+    environment:
+      LOGISTICS_DATABASE_URL: postgresql+asyncpg://logistics:logistics@logistics-db:5432/logistics
+      LOGISTICS_REDIS_URL: redis://logistics-redis:6379/0
+      LOGISTICS_CELERY_BROKER_URL: redis://logistics-redis:6379/1
+      LOGISTICS_CELERY_RESULT_BACKEND: redis://logistics-redis:6379/2
+    depends_on:
+      - logistics-worker
+    networks:
+      - nut_meals_net
+
+  logistics-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: logistics
+      POSTGRES_PASSWORD: logistics
+      POSTGRES_DB: logistics
+    volumes:
+      - logistics_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logistics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nut_meals_net
+
+  logistics-redis:
+    image: redis:7-alpine
+    networks:
+      - nut_meals_net
+
+volumes:
+  logistics_db_data:
+
+networks:
+  nut_meals_net:
+    external: true

@@ -11,6 +11,9 @@ from app.api.routes.payments import router as payments_router
 from app.core.config import settings
 from app.core.db import Base, engine
 from app.core.redis import close_redis
+from app.api.routes.refund import router as refunds_router
+from app.api.routes.settlement import router as settlements_router
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +50,8 @@ app.add_middleware(
 )
 
 app.include_router(payments_router, prefix="/api/v1")
-
+app.include_router(refunds_router, prefix="/api/v1")
+app.include_router(settlements_router, prefix="/api/v1")
 
 @app.get("/health", tags=["health"])
 async def health_check():

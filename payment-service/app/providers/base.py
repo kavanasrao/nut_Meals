@@ -1,61 +1,150 @@
-"""Abstract base class that all payment providers must implement.
-
-To add a new provider:
-  1. Create a new file in this package (e.g. razorpay_provider.py).
-  2. Subclass PaymentProvider and implement all abstract methods.
-  3. Register the class in factory.py.
-  4. Set PAYMENT_PROVIDER=<name> in your .env.
-
-Business logic in payment_service.py must NEVER import a concrete provider
-directly — always use get_payment_provider() from factory.py.
 """
+Abstract base class for all payment providers.
+
+Every payment gateway (Razorpay, Juspay, Stripe, Kotak, Cashfree, etc.)
+must inherit from PaymentProvider and implement all abstract methods.
+
+Business logic MUST NEVER import a concrete provider directly.
+Always use the provider factory.
+"""
+
 from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 
-@dataclass
+# ============================================================================
+# Payment Result
+# ============================================================================
+
+@dataclass(slots=True)
 class PaymentResult:
-    """Normalised result returned by create_payment across all providers."""
-    provider: str               # e.g. "juspay"
-    payment_id: str             # provider-side ID / session ID
-    payment_url: str            # URL the user is redirected to (or empty for server-side)
-    raw: dict[str, Any]         # full provider response (stored for audit)
+    """
+    Normalized payment creation response.
+    """
 
-
-@dataclass
-class WebhookResult:
-    """Normalised result returned by verify_webhook across all providers."""
     provider: str
-    order_id: str               # our internal order ID embedded in the payment
-    payment_id: str             # provider-side transaction / payment ID
-    status: str                 # normalised: "SUCCESS" | "FAILED" | "PENDING"
-    amount: str                 # as string to avoid float issues
-    raw: dict[str, Any]         # full parsed webhook payload
+    payment_id: str
+    payment_url: str
+    raw: dict[str, Any]
 
+
+# ============================================================================
+# Refund Result
+# ============================================================================
+
+@dataclass(slots=True)
+class RefundResult:
+    """
+    Normalized refund response.
+    """
+
+    provider: str
+    refund_id: str
+    payment_id: str
+    amount: Decimal
+    status: str
+    raw: dict[str, Any]
+
+
+# ============================================================================
+# Webhook Result
+# ============================================================================
+
+@dataclass(slots=True)
+class WebhookResult:
+    """
+    Normalized webhook payload.
+    """
+
+    provider: str
+    order_id: str
+    payment_id: str
+    status: str
+    amount: Decimal
+    currency: str
+    raw: dict[str, Any]
+
+
+# ============================================================================
+# Settlement Result
+# ============================================================================
+
+@dataclass(slots=True)
+class SettlementResult:
+    """
+    Normalized settlement record.
+    """
+
+    provider: str
+    settlement_reference: str
+    amount: Decimal
+    currency: str
+    status: str
+    settlement_date: str
+    raw: dict[str, Any]
+
+
+# ============================================================================
+# Payment Provider Interface
+# ============================================================================
 
 class PaymentProvider(abc.ABC):
-    """Interface every payment provider adapter must satisfy."""
+    """
+    Base interface implemented by every payment gateway.
+
+    Supported gateways:
+
+    - Razorpay
+    - Juspay
+    - Kotak
+    - Stripe
+    - Cashfree
+
+    Business logic interacts only with this interface.
+    """
 
     @abc.abstractmethod
     def get_name(self) -> str:
-        """Return provider slug, e.g. 'juspay'."""
+        """
+        Return provider name.
+
+        Example:
+            razorpay
+            juspay
+            kotak
+        """
+        raise NotImplementedError
+
+    # ----------------------------------------------------------------------
+    # Payment Creation
+    # ----------------------------------------------------------------------
 
     @abc.abstractmethod
-    async def create_payment(self, data: dict[str, Any]) -> PaymentResult:
+    async def create_payment(
+        self,
+        data: dict[str, Any],
+    ) -> PaymentResult:
         """
-        Initiate a payment session with the provider.
+        Create a payment session.
 
-        Expected keys in `data`:
-          order_id   (str) — our internal order UUID
-          amount     (str) — total in INR, e.g. "499.00"
-          user_id    (str)
-          email      (str, optional)
-          phone      (str, optional)
-          return_url (str, optional)
+        Expected keys:
+
+        order_id
+        amount
+        user_id
+        email
+        phone
+        return_url
         """
+        raise NotImplementedError
+
+    # ----------------------------------------------------------------------
+    # Webhook Verification
+    # ----------------------------------------------------------------------
 
     @abc.abstractmethod
     async def verify_webhook(
@@ -64,7 +153,56 @@ class PaymentProvider(abc.ABC):
         body: bytes,
     ) -> WebhookResult:
         """
-        Validate the webhook signature and return a normalised WebhookResult.
+        Verify webhook signature.
 
-        Raises ValueError if the signature is invalid or payload is malformed.
+        Raises:
+
+            ValueError
+
+        if signature verification fails.
         """
+        raise NotImplementedError
+
+    # ----------------------------------------------------------------------
+    # Refund
+    # ----------------------------------------------------------------------
+
+    @abc.abstractmethod
+    async def refund(
+        self,
+        payment_id: str,
+        amount: Decimal,
+        reason: str | None = None,
+    ) -> RefundResult:
+        """
+        Initiate a full or partial refund.
+        """
+        raise NotImplementedError
+
+    # ----------------------------------------------------------------------
+    # Settlement
+    # ----------------------------------------------------------------------
+
+    @abc.abstractmethod
+    async def fetch_settlements(
+        self,
+    ) -> list[SettlementResult]:
+        """
+        Fetch settlement report from gateway.
+        """
+        raise NotImplementedError
+
+    # ----------------------------------------------------------------------
+    # Health Check
+    # ----------------------------------------------------------------------
+
+    @abc.abstractmethod
+    async def health_check(self) -> bool:
+        """
+        Check whether the payment gateway is reachable.
+
+        Returns:
+            True if healthy
+            False otherwise
+        """
+        raise NotImplementedError
