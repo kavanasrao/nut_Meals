@@ -1,0 +1,251 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# nut_Meals Infra Service — Multi-arch Docker Build & Push
+#
+# Triggers:
+#   • push to main/develop  → builds + pushes with branch + sha tags
+#   • release published      → builds + pushes with semver + latest tags
+#   • pull_request           → builds only (no push), validates image
+#
+# Produces images for:  linux/amd64, linux/arm64
+#
+# Required secrets (set in repo or org settings):
+#   GHCR_TOKEN      — GitHub Personal Access Token with packages:write
+#   SLACK_WEBHOOK   — (optional) Slack incoming webhook for notifications
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Build & Push Multi-Arch Image
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "app/**"
+      - "docker/Dockerfile"
+      - "requirements*.txt"
+      - ".github/workflows/build-push.yml"
+  pull_request:
+    branches: [main, develop]
+  release:
+    types: [published]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/nut-meals-infra
+
+jobs:
+  # ─── Lint & static checks ───────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dev deps
+        run: pip install ruff mypy types-redis
+
+      - name: Ruff lint
+        run: ruff check app/
+
+      - name: Ruff format check
+        run: ruff format --check app/
+
+  # ─── Unit tests ─────────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: infra_test
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U test" --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 10s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/infra_test
+          REDIS_URL: redis://localhost:6379/3
+          CELERY_BROKER_URL: redis://localhost:6379/3
+          CELERY_RESULT_BACKEND: redis://localhost:6379/3
+          SECRET_KEY: test-secret
+          INTERNAL_API_KEY: test-key
+          BACKUP_ENCRYPTION_KEY: "aaaabbbbccccddddeeeeffffgggghhhh"
+          ENVIRONMENT: test
+        run: pytest tests/ -v --tb=short --cov=app --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+        continue-on-error: true
+
+  # ─── Multi-arch build ────────────────────────────────────────────────────────
+  build:
+    name: Build Multi-Arch Image
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+      id-token: write    # for cosign OIDC signing
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Set up QEMU for ARM64 emulation ──────────────────────────────────
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      # ── Set up BuildKit with multi-node builder ──────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      # ── Login to GHCR ─────────────────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # ── Compute image metadata & tags ─────────────────────────────────────
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Branch push: branch name + short SHA
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            # PR: pr-NUMBER
+            type=ref,event=pr
+            # Release: semantic version + latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+          labels: |
+            org.opencontainers.image.title=nut-meals-infra
+            org.opencontainers.image.description=nut_Meals Infrastructure Service
+            org.opencontainers.image.vendor=nut-Meals
+
+      # ── Build all targets: api, worker, beat ─────────────────────────────
+      - name: Build & push — API (production target)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: production
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=infra-api
+          cache-to: type=gha,mode=max,scope=infra-api
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            GIT_SHA=${{ github.sha }}
+          provenance: true
+          sbom: true
+
+      - name: Build & push — Celery Worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: celery-worker
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:latest
+          cache-from: type=gha,scope=infra-worker
+          cache-to: type=gha,mode=max,scope=infra-worker
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            GIT_SHA=${{ github.sha }}
+
+      - name: Build & push — Celery Beat
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: celery-beat
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-beat:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-beat:latest
+          cache-from: type=gha,scope=infra-beat
+          cache-to: type=gha,mode=max,scope=infra-beat
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            GIT_SHA=${{ github.sha }}
+
+      # ── Sign the manifest with cosign (keyless OIDC) ─────────────────────
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with cosign
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          echo "$TAGS" | xargs -I {} cosign sign --yes \
+            "{}@$DIGEST"
+
+  # ─── Notify ──────────────────────────────────────────────────────────────────
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    needs: build
+    if: always() && github.event_name != 'pull_request' && secrets.SLACK_WEBHOOK != ''
+    steps:
+      - name: Slack notification
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "${{ needs.build.result == 'success' && '✅' || '❌' }} *nut_Meals Infra* image build *${{ needs.build.result }}* — `${{ github.ref_name }}` @ `${{ github.sha }}`"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -1,0 +1,149 @@
+name: Notification & Messaging Service CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'services/notification-service/**'
+      - '.github/workflows/notification-service-ci.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'services/notification-service/**'
+
+defaults:
+  run:
+    working-directory: services/notification-service
+
+env:
+  IMAGE_NAME: nutmeals/notification-service
+  REGISTRY: ghcr.io
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lint tools
+        run: pip install ruff black
+      - name: Ruff
+        run: ruff check .
+      - name: Black --check
+        run: black --check .
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: notify
+          POSTGRES_PASSWORD: notify
+          POSTGRES_DB: notification_service_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Alembic migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://notify:notify@localhost:5432/notification_service_test
+        run: alembic upgrade head
+
+      - name: Run tests with coverage
+        env:
+          DATABASE_URL: postgresql+asyncpg://notify:notify@localhost:5432/notification_service_test
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          JWT_SECRET: test-secret
+        run: pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=80
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: services/notification-service/coverage.xml
+
+      - name: Publish coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: services/notification-service/coverage.xml
+          flags: notification-service
+          fail_ci_if_error: false
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push multi-arch image (amd64 + arm64)
+        uses: docker/build-push-action@v5
+        with:
+          context: services/notification-service
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Deploy notification-service
+        run: |
+          echo "Trigger deployment via your orchestrator (e.g. OKE/Kubernetes rollout,"
+          echo "ECS service update, or Argo CD sync) using the newly pushed image tag."
+          echo "Wired to org-specific deploy tooling — placeholder step."

@@ -1,0 +1,52 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# nut_Meals — Scheduled Backup Trigger
+#
+# Triggers the infra service API to run a backup for all configured databases.
+# Acts as a fallback if Celery Beat is unavailable.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Scheduled Backup
+
+on:
+  schedule:
+    - cron: "0 2 * * *"    # 02:00 UTC daily
+  workflow_dispatch:        # allow manual trigger
+    inputs:
+      db_alias:
+        description: "DB alias to back up (leave blank for all)"
+        required: false
+        default: ""
+
+jobs:
+  trigger-backup:
+    name: Trigger Backup via API
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Trigger backup for all databases
+        if: ${{ github.event.inputs.db_alias == '' }}
+        run: |
+          curl -fsSL \
+            -X POST "${{ secrets.INFRA_SERVICE_URL }}/api/v1/backups/" \
+            -H "Content-Type: application/json" \
+            -H "X-Internal-API-Key: ${{ secrets.INTERNAL_API_KEY }}" \
+            -d '{"db_alias": "orders", "backup_type": "full"}' \
+            | jq .
+
+          curl -fsSL \
+            -X POST "${{ secrets.INFRA_SERVICE_URL }}/api/v1/backups/" \
+            -H "Content-Type: application/json" \
+            -H "X-Internal-API-Key: ${{ secrets.INTERNAL_API_KEY }}" \
+            -d '{"db_alias": "users", "backup_type": "full"}' \
+            | jq .
+
+      - name: Trigger backup for specific DB
+        if: ${{ github.event.inputs.db_alias != '' }}
+        run: |
+          curl -fsSL \
+            -X POST "${{ secrets.INFRA_SERVICE_URL }}/api/v1/backups/" \
+            -H "Content-Type: application/json" \
+            -H "X-Internal-API-Key: ${{ secrets.INTERNAL_API_KEY }}" \
+            -d "{\"db_alias\": \"${{ github.event.inputs.db_alias }}\", \"backup_type\": \"full\"}" \
+            | jq .

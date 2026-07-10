@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "local"
     DEBUG: bool = False
 
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/nutmeals_meals"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:username@postgrey:5432/database_name"
     REDIS_URL: str = "redis://localhost:6379/0"
 
     JWT_SECRET: str = "change_me_in_production"

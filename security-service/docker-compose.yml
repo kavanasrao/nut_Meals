@@ -1,0 +1,110 @@
+# docker-compose.yml for the Security Service.
+#
+# This file is runnable standalone for local development of this service.
+# In the full nut_meals platform repo, these service definitions are merged
+# into the root docker-compose.yml alongside orders/, payments/, inventory/,
+# auth/, etc., all sharing the `nutmeals-net` network so services can reach
+# each other by name (e.g. http://security-service:8000).
+
+version: "3.9"
+
+networks:
+  nutmeals-net:
+    driver: bridge
+
+volumes:
+  security-db-data:
+
+services:
+  security-service:
+    build:
+      context: .
+      target: runtime
+    image: nutmeals/security-service:local
+    env_file: .env
+    environment:
+      SECURITY_DATABASE_URL: postgresql+asyncpg://nutmeals:nutmeals@security-db:5432/security_db
+      SECURITY_REDIS_URL: redis://security-redis:6379/0
+      SECURITY_CELERY_BROKER_URL: redis://security-redis:6379/1
+      SECURITY_CELERY_RESULT_BACKEND: redis://security-redis:6379/2
+      SECURITY_ENV: local
+      SECURITY_ENFORCE_HTTPS: "false"
+    ports:
+      - "8010:8000"
+    depends_on:
+      security-db:
+        condition: service_healthy
+      security-redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-net
+    command: >
+      sh -c "alembic upgrade head &&
+             gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker
+             --bind 0.0.0.0:8000 --workers 2 --reload"
+
+  security-celery-worker:
+    build:
+      context: .
+      target: runtime
+    image: nutmeals/security-service:local
+    env_file: .env
+    environment:
+      SECURITY_DATABASE_URL: postgresql+asyncpg://nutmeals:nutmeals@security-db:5432/security_db
+      SECURITY_REDIS_URL: redis://security-redis:6379/0
+      SECURITY_CELERY_BROKER_URL: redis://security-redis:6379/1
+      SECURITY_CELERY_RESULT_BACKEND: redis://security-redis:6379/2
+    depends_on:
+      security-db:
+        condition: service_healthy
+      security-redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-net
+    command: celery -A app.tasks.celery_app worker --loglevel=info -Q security_service,audit_events,audit_exports
+
+  security-celery-beat:
+    build:
+      context: .
+      target: runtime
+    image: nutmeals/security-service:local
+    env_file: .env
+    environment:
+      SECURITY_DATABASE_URL: postgresql+asyncpg://nutmeals:nutmeals@security-db:5432/security_db
+      SECURITY_REDIS_URL: redis://security-redis:6379/0
+      SECURITY_CELERY_BROKER_URL: redis://security-redis:6379/1
+      SECURITY_CELERY_RESULT_BACKEND: redis://security-redis:6379/2
+    depends_on:
+      security-db:
+        condition: service_healthy
+      security-redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-net
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+
+  security-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nutmeals
+      POSTGRES_PASSWORD: nutmeals
+      POSTGRES_DB: security_db
+    volumes:
+      - security-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nutmeals -d security_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nutmeals-net
+
+  security-redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nutmeals-net

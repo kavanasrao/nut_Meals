@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = (
-    "postgresql+asyncpg://postgres:kanni3750@localhost:5432/nutmeals_db"
+    "postgresql+asyncpg://postgres:username@postgrey:5432/database_name"
 )
     
     # Redis / Celery

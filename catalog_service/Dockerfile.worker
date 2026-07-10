@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.7
+# Dockerfile for the Catalog Service's Celery worker/beat processes.
+# Shares the same dependency set as the API image; entrypoint differs.
+
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 catalog
+
+WORKDIR /app
+
+COPY --from=builder /root/.local /home/catalog/.local
+COPY app ./app
+
+ENV PATH=/home/catalog/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN chown -R catalog:catalog /app
+USER catalog
+
+# Default to worker; docker-compose overrides command for the beat service.
+CMD ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=INFO", "--concurrency=4"]

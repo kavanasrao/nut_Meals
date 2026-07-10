@@ -1,0 +1,194 @@
+name: Admin CMS Service CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "admin_cms_service/**"
+      - ".github/workflows/admin-cms-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "admin_cms_service/**"
+      - ".github/workflows/admin-cms-ci.yml"
+
+defaults:
+  run:
+    working-directory: admin_cms_service
+
+env:
+  IMAGE_NAME: nut-meals/admin-cms-service
+  REGISTRY: ghcr.io
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: admin_cms_service/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff black
+
+      - name: Run ruff
+        run: ruff check app tests
+
+      - name: Run black --check
+        run: black --check app tests
+
+  test:
+    name: Test (pytest, coverage >= 80%)
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: admin_cms_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: admin_cms_service/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Alembic migrations against test DB
+        env:
+          ADMIN_CMS_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/admin_cms_test
+        run: alembic upgrade head
+
+      - name: Run pytest with coverage
+        env:
+          ADMIN_CMS_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/admin_cms_test
+          ADMIN_CMS_ENVIRONMENT: test
+          ADMIN_CMS_JWT_PUBLIC_KEY: test-secret-not-real
+          ADMIN_CMS_JWT_ALGORITHM: HS256
+        run: pytest
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: admin_cms_service/coverage.xml
+
+      - name: Publish coverage summary
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: admin_cms_service/coverage.xml
+          badge: true
+          fail_below_min: true
+          thresholds: "80 90"
+
+  build-and-push:
+    name: Build & push multi-arch image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (for ARM64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push API image (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: admin_cms_service
+          file: admin_cms_service/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push worker image (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: admin_cms_service
+          file: admin_cms_service/Dockerfile.worker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:${{ github.sha }},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: staging
+
+    steps:
+      - name: Trigger deployment
+        run: |
+          echo "Deploying ${{ env.IMAGE_NAME }}:${{ github.sha }} to staging cluster."
+          # In production this step invokes the internal deploy tool
+          # (e.g. `kubectl set image` / Helm upgrade / Argo CD sync),
+          # authenticating via an OIDC-federated cloud credential rather
+          # than a long-lived secret. Fetches DB/JWT secrets from OCI
+          # Vault at pod start via the Vault CSI driver / init container.
