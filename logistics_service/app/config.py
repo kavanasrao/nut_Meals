@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/logistics"
+    DATABASE_URL: str = (
+    "postgresql+asyncpg://postgres:kanni3750@localhost:5432/nutmeals_db"
+)
     db_pool_size: int = 10
     db_max_overflow: int = 20
 

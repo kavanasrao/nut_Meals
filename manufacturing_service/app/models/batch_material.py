@@ -1,0 +1,58 @@
+"""
+Production Batch Material Consumption ORM model.
+"""
+
+from __future__ import annotations
+
+import uuid
+from decimal import Decimal
+
+from sqlalchemy import (
+    ForeignKey,
+    Numeric,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+class BatchMaterial(Base):
+    __tablename__ = "batch_materials"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("production_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    raw_material_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("raw_materials.id"),
+        nullable=False,
+        index=True,
+    )
+
+    planned_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(12, 3),
+        nullable=False,
+    )
+
+    actual_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(12, 3),
+        nullable=False,
+        default=0,
+    )
+
+    wastage_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(12, 3),
+        nullable=False,
+        default=0,
+    )
