@@ -18,16 +18,21 @@
 version: "3.9"
 
 x-common-env: &common-env
+  ENVIRONMENT: local
+  DEBUG: "true"
   REDIS_URL: redis://redis:6379/0
   JWT_SECRET: super_secret_jwt_key_change_in_production
   JWT_ALGORITHM: HS256
-  ENVIRONMENT: local
-  DEBUG: "true"
 
 services:
-  # ── Infrastructure ────────────────────────────────────────────────────────
+
+  ####################################################
+  # Infrastructure
+  ####################################################
+
   postgres:
     image: postgres:16-alpine
+    container_name: nutmeals-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -39,53 +44,95 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-dbs.sql:/docker-entrypoint-initdb.d/init-dbs.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL","pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+    networks:
+      - nutmeals-network
 
   redis:
     image: redis:7-alpine
+    container_name: nutmeals-redis
     restart: unless-stopped
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
-    command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD","redis-cli","ping"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+    networks:
+      - nutmeals-network
 
-  # ── Application services ──────────────────────────────────────────────────
+  ####################################################
+  # API Gateway
+  ####################################################
+
   api-gateway:
     build:
       context: ./api-gateway
       dockerfile: Dockerfile
+    container_name: api-gateway
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
       <<: *common-env
       SERVICE_NAME: api-gateway
+
+      USER_SERVICE_URL: http://user-service:8005
       ORDER_SERVICE_URL: http://order-service:8001
       PAYMENT_SERVICE_URL: http://payment-service:8002
-      NOTIFICATION_SERVICE_URL: http://notification-service:8003
       DELIVERY_SERVICE_URL: http://delivery-service:8004
-      USER_SERVICE_URL: http://user-service:8005
       MEAL_SERVICE_URL: http://meal-service:8006
-      RATE_LIMIT_MAX_REQUESTS: "100"
-      RATE_LIMIT_WINDOW_SECONDS: "60"
-      CORS_ORIGINS: "*"
+      NOTIFICATION_SERVICE_URL: http://notification-service:8003
+
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # User Service
+  ####################################################
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: user-service
     restart: unless-stopped
+    ports:
+      - "8005:8005"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: user-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Order Service
+  ####################################################
 
   order-service:
     build:
       context: ./order-service
       dockerfile: Dockerfile
+    container_name: order-service
+    restart: unless-stopped
     ports:
       - "8001:8001"
     environment:
@@ -97,140 +144,393 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - nutmeals-network
 
-  user-service:
-    build:
-      context: ./user-service
-      dockerfile: Dockerfile
-    ports:
-      - "8005:8005"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: user-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
-      JWT_REFRESH_TOKEN_EXPIRE_DAYS: "30"
-      USER_CACHE_TTL: "300"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  meal-service:
-    build:
-      context: ./meal-service
-      dockerfile: Dockerfile
-    ports:
-      - "8006:8006"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: meal-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-      MEAL_CACHE_TTL: "600"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+  ####################################################
+  # Payment Service
+  ####################################################
 
   payment-service:
     build:
       context: ./payment-service
       dockerfile: Dockerfile
+    container_name: payment-service
+    restart: unless-stopped
     ports:
       - "8002:8002"
     environment:
       <<: *common-env
       SERVICE_NAME: payment-service
       DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-      PAYMENT_PROVIDER: juspay
       JUSPAY_API_KEY: ${JUSPAY_API_KEY:-}
       JUSPAY_MERCHANT_ID: ${JUSPAY_MERCHANT_ID:-}
-      JUSPAY_BASE_URL: ${JUSPAY_BASE_URL:-https://sandbox.juspay.in}
-      JUSPAY_WEBHOOK_SECRET: ${JUSPAY_WEBHOOK_SECRET:-}
+      JUSPAY_BASE_URL: https://sandbox.juspay.in
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Notification Service
+  ####################################################
 
   notification-service:
     build:
       context: ./notification-service
       dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
     ports:
       - "8003:8003"
     environment:
       <<: *common-env
       SERVICE_NAME: notification-service
       DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-      WHATSAPP_PROVIDER: twilio
-      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
-      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
-      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-whatsapp:+14155238886}
-      SUBSCRIBED_CHANNELS: ORDER_CREATED,PAYMENT_SUCCESS,DELIVERY_ASSIGNED
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Delivery Service
+  ####################################################
 
   delivery-service:
     build:
       context: ./delivery-service
       dockerfile: Dockerfile
+    container_name: delivery-service
+    restart: unless-stopped
     ports:
       - "8004:8004"
     environment:
       <<: *common-env
       SERVICE_NAME: delivery-service
       DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-      HOME_DELIVERY_RADIUS_KM: "15.0"
-      HOME_DELIVERY_BASE_ETA_MINUTES: "40"
-      PICKUP_BASE_ETA_MINUTES: "10"
-      RESTAURANT_LAT: "13.0827"
-      RESTAURANT_LON: "80.2707"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Meal Service
+  ####################################################
+
+  meal-service:
+    build:
+      context: ./meal-service
+      dockerfile: Dockerfile
+    container_name: meal-service
     restart: unless-stopped
+    ports:
+      - "8006:8006"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: meal-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+
+  ####################################################
+  # Admin Service
+  ####################################################
 
   admin-service:
     build:
       context: ./admin-service
       dockerfile: Dockerfile
+    container_name: admin-service
+    restart: unless-stopped
     ports:
       - "8007:8007"
     environment:
       <<: *common-env
       SERVICE_NAME: admin-service
       DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-      JWT_SECRET: ${ADMIN_JWT_SECRET:-change_me_admin_super_secret_key}
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
-      JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
       USER_SERVICE_URL: http://user-service:8005
       ORDER_SERVICE_URL: http://order-service:8001
       PAYMENT_SERVICE_URL: http://payment-service:8002
-      NOTIFICATION_SERVICE_URL: http://notification-service:8003
       DELIVERY_SERVICE_URL: http://delivery-service:8004
       MEAL_SERVICE_URL: http://meal-service:8006
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-change_me_internal}
-      DOWNSTREAM_TIMEOUT: "15.0"
+      NOTIFICATION_SERVICE_URL: http://notification-service:8003
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Admin CMS Service
+  ####################################################
+
+  admin_cms_service:
+    build:
+      context: ./admin_cms_service
+      dockerfile: Dockerfile
+    container_name: admin-cms-service
     restart: unless-stopped
+    ports:
+      - "8008:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: admin-cms-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Catalog Service
+  ####################################################
+
+  catalog_service:
+    build:
+      context: ./catalog_service
+      dockerfile: Dockerfile
+    container_name: catalog-service
+    restart: unless-stopped
+    ports:
+      - "8009:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: catalog-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Inventory Service
+  ####################################################
+
+  inventory_service:
+    build:
+      context: ./inventory_service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    restart: unless-stopped
+    ports:
+      - "8010:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: inventory-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # CRM Service
+  ####################################################
+
+  crm_service:
+    build:
+      context: ./crm_service
+      dockerfile: Dockerfile
+    container_name: crm-service
+    restart: unless-stopped
+    ports:
+      - "8011:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: crm-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Finance Service
+  ####################################################
+
+  finance-service:
+    build:
+      context: ./finance-service
+      dockerfile: Dockerfile
+    container_name: finance-service
+    restart: unless-stopped
+    ports:
+      - "8012:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: finance-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Logistics Service
+  ####################################################
+
+  logistics_service:
+    build:
+      context: ./logistics_service
+      dockerfile: Dockerfile
+    container_name: logistics-service
+    restart: unless-stopped
+    ports:
+      - "8013:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: logistics-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Manufacturing Service
+  ####################################################
+
+  manufacturing_service:
+    build:
+      context: ./manufacturing_service
+      dockerfile: Dockerfile
+    container_name: manufacturing-service
+    restart: unless-stopped
+    ports:
+      - "8014:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: manufacturing-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # SEO Service
+  ####################################################
+
+  seo_service:
+    build:
+      context: ./seo_service
+      dockerfile: Dockerfile
+    container_name: seo-service
+    restart: unless-stopped
+    ports:
+      - "8015:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: seo-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Cart Checkout Service
+  ####################################################
+
+  cart_checkout_ext:
+    build:
+      context: ./cart_checkout_ext
+      dockerfile: Dockerfile
+    container_name: cart-checkout-service
+    restart: unless-stopped
+    ports:
+      - "8016:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: cart-checkout-service
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
+  # Security Service
+  ####################################################
+
+  security-service:
+    build:
+      context: ./security-service
+      dockerfile: Dockerfile
+    container_name: security-service
+    restart: unless-stopped
+    ports:
+      - "8017:8000"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: security-service
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+
+
+    ####################################################
+  # Infrastructure Service (Optional)
+  ####################################################
+
+  nutmeals-infra:
+    build:
+      context: ./nut_meals_infra/docker
+      dockerfile: Dockerfile
+    container_name: nutmeals-infra
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+####################################################
+# Volumes
+####################################################
 
 volumes:
   postgres_data:
+    driver: local
+
   redis_data:
+    driver: local
+
+####################################################
+# Networks
+####################################################
+
+networks:
+  nutmeals-network:
+    driver: bridge
