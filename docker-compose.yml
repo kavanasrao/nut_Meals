@@ -1,19 +1,85 @@
 # Nutmeals — Complete Microservices Docker Compose
+# Rewritten to support the updated api-gateway (full 17-service reverse proxy).
 #
-# Services:
-#   Infrastructure : postgres (16), redis (7)
-#   api-gateway    : port 8000 — single client entry point
-#   user-service   : port 8005
-#   meal-service   : port 8006
-#   order-service  : port 8001
-#   payment-service: port 8002
-#   notification-service: port 8003
-#   delivery-service: port 8004
-#   admin-service  : port 8007
+# Changes from the previous version, and why:
 #
-# Quick start:
-#   docker compose up --build
-#   docker compose exec admin-service python scripts/seed_superadmin.py
+#   1. delivery-service REMOVED.
+#      `./delivery-service` does not exist in this repository and the new
+#      gateway no longer routes to it. The old file referenced it and would
+#      fail on `docker compose build`.
+#
+#   2. customer_commerce_service and procurement_service ADDED.
+#      Both exist in the repo with real code but were entirely missing from
+#      the old docker-compose.yml. The new gateway routes to both
+#      (/api/v1/customer, /api/v1/procurement), so they must run.
+#
+#   3. Internal container ports fixed for 4 services whose Dockerfile
+#      actually binds to a DIFFERENT port than what compose was mapping to:
+#        - notification-service : binds 8000  (was mapped 8003:8003)
+#        - inventory_service     : binds 8001  (was mapped 8010:8000)
+#        - crm_service           : binds 8005  (was mapped 8011:8000)
+#        - manufacturing_service : binds 8001  (was mapped 8014:8000)
+#      External host ports are left as before for anyone with muscle memory
+#      around them; only the CONTAINER side of each mapping was corrected.
+#
+#   4. env_prefix mismatches fixed. Several services' Settings classes use
+#      pydantic's `env_prefix`, so a plain `DATABASE_URL` env var was being
+#      silently ignored and the app fell back to a broken placeholder
+#      default (e.g. host "postgrey", which does not exist):
+#        - catalog_service   -> needs CATALOG_*
+#        - logistics_service -> needs LOGISTICS_*
+#        - seo_service       -> needs SEO_*
+#        - security-service  -> needs SECURITY_*
+#        - admin_cms_service -> needs ADMIN_CMS_*
+#
+#   5. Per-service databases. init-dbs.sql now creates one database per
+#      service and every DATABASE_URL below points at its own database,
+#      instead of everyone sharing one `nutmeals_db` while 7 unused
+#      databases sat empty (see init-dbs.sql comments).
+#
+#   6. security-service now actually gets a database + depends_on postgres.
+#      It ships Alembic migrations and a required DATABASE_URL field, but
+#      the old compose file only gave it `depends_on: redis` and no DB at
+#      all — it would have failed on startup.
+#
+#   7. Downstream service-to-service URLs corrected to the port each target
+#      container ACTUALLY listens on internally (not always the same as
+#      its external host mapping) — several of these were wrong even in
+#      the services' own code defaults (e.g. catalog_service's own default
+#      INVENTORY_SERVICE_URL pointed at :8000, but inventory actually binds
+#      :8001). Set explicitly here to override those bad defaults.
+#
+#   8. UNRESOLVED, NOT fixable from docker-compose alone — flagged, not
+#      papered over:
+#        - Three services (logistics_service, seo_service, admin_cms_service)
+#          verify JWT with RS256 + a public key, while every other service
+#          (11 of them) verifies with HS256 + a shared secret. Tokens issued
+#          by user-service (HS256) will NOT validate against those three
+#          unless/until someone adds real RSA keypair issuance — a shared
+#          JWT_SECRET env var cannot bridge that gap. JWT_PUBLIC_KEY is left
+#          blank below as a placeholder; auth against these 3 services will
+#          not work until that's addressed in code.
+#        - crm_service's own config.py requires DATABASE_URL and SECRET_KEY
+#          (Field(...), no defaults) and references legacy service names
+#          that don't exist in this stack (AUTH_SERVICE_URL, PRODUCT_SERVICE_URL,
+#          pointing at ports 8001-8006 for services with different real
+#          names/ports). Those specific cross-service calls will silently
+#          hit nothing — only DATABASE_URL/SECRET_KEY are wired below since
+#          those are the two required to avoid a startup crash.
+#        - notification-service has two competing config.py/main.py pairs
+#          (root main.py + app/main.py, each importing a different config
+#          module). The Dockerfile runs `app.main:app`, so `app/config.py`
+#          (lowercase fields, port 8000) is the one actually used — the
+#          other pair is dead code, left as-is since removing it is a code
+#          change, not a compose change.
+#
+#   9. api-gateway ALSO needs matching code changes — this compose file
+#      only supplies the right env vars. The gateway's config.py and auth.py
+#      must be updated to (a) declare the new *_SERVICE_URL settings fields
+#      and (b) make get_current_user an async function, or the container
+#      will crash on startup / on the first authenticated request
+#      regardless of what's in this file. See the config.py/auth.py fixes
+#      provided alongside this compose file.
 
 version: "3.9"
 
@@ -22,7 +88,9 @@ x-common-env: &common-env
   DEBUG: "true"
   REDIS_URL: redis://redis:6379/0
   JWT_SECRET: super_secret_jwt_key_change_in_production
+  JWT_SECRET_KEY: super_secret_jwt_key_change_in_production   # same value, different field name some services use
   JWT_ALGORITHM: HS256
+  INTERNAL_SERVICE_TOKEN: change_me_internal_token
 
 services:
 
@@ -84,13 +152,28 @@ services:
       <<: *common-env
       SERVICE_NAME: api-gateway
 
+      SECURITY_SERVICE_URL: http://security-service:8000
       USER_SERVICE_URL: http://user-service:8005
+      CATALOG_SERVICE_URL: http://catalog-service:8000
+      MEAL_SERVICE_URL: http://meal-service:8006
+      CUSTOMER_COMMERCE_SERVICE_URL: http://customer-commerce-service:8000
+      INVENTORY_SERVICE_URL: http://inventory-service:8001
       ORDER_SERVICE_URL: http://order-service:8001
       PAYMENT_SERVICE_URL: http://payment-service:8002
-      DELIVERY_SERVICE_URL: http://delivery-service:8004
-      MEAL_SERVICE_URL: http://meal-service:8006
-      NOTIFICATION_SERVICE_URL: http://notification-service:8003
+      MANUFACTURING_SERVICE_URL: http://manufacturing-service:8001
+      PROCUREMENT_SERVICE_URL: http://procurement-service:8000
+      LOGISTICS_SERVICE_URL: http://logistics-service:8000
+      CRM_SERVICE_URL: http://crm-service:8005
+      NOTIFICATION_SERVICE_URL: http://notification-service:8000
+      SEO_SERVICE_URL: http://seo-service:8000
+      FINANCE_SERVICE_URL: http://finance-service:8000
+      ADMIN_SERVICE_URL: http://admin-service:8007
+      ADMIN_CMS_SERVICE_URL: http://admin-cms-service:8000
 
+      RATE_LIMIT_WINDOW_SECONDS: 60
+      RATE_LIMIT_MAX_REQUESTS: 100
+      RATE_LIMIT_AUTH_MAX_REQUESTS: 10
+      CORS_ORIGINS: "*"
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,7 +197,10 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: user-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_users
+      NOTIFICATION_SERVICE_URL: http://notification-service:8000
+      ORDER_SERVICE_URL: http://order-service:8001
+      CRM_SERVICE_URL: http://crm-service:8005
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,7 +224,7 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: order-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_orders
     depends_on:
       postgres:
         condition: service_healthy
@@ -162,7 +248,7 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: payment-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_payments
       JUSPAY_API_KEY: ${JUSPAY_API_KEY:-}
       JUSPAY_MERCHANT_ID: ${JUSPAY_MERCHANT_ID:-}
       JUSPAY_BASE_URL: https://sandbox.juspay.in
@@ -176,6 +262,8 @@ services:
 
   ####################################################
   # Notification Service
+  # Actually binds container port 8000 (app/main.py + app/config.py) —
+  # NOT 8003. Host port kept at 8003 for continuity; container side fixed.
   ####################################################
 
   notification-service:
@@ -185,35 +273,11 @@ services:
     container_name: notification-service
     restart: unless-stopped
     ports:
-      - "8003:8003"
+      - "8003:8000"
     environment:
       <<: *common-env
       SERVICE_NAME: notification-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - nutmeals-network
-
-  ####################################################
-  # Delivery Service
-  ####################################################
-
-  delivery-service:
-    build:
-      context: ./delivery-service
-      dockerfile: Dockerfile
-    container_name: delivery-service
-    restart: unless-stopped
-    ports:
-      - "8004:8004"
-    environment:
-      <<: *common-env
-      SERVICE_NAME: delivery-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_notifications
     depends_on:
       postgres:
         condition: service_healthy
@@ -237,7 +301,7 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: meal-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_meals
     depends_on:
       postgres:
         condition: service_healthy
@@ -245,7 +309,6 @@ services:
         condition: service_healthy
     networks:
       - nutmeals-network
-
 
   ####################################################
   # Admin Service
@@ -262,13 +325,12 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: admin-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_admin
       USER_SERVICE_URL: http://user-service:8005
       ORDER_SERVICE_URL: http://order-service:8001
       PAYMENT_SERVICE_URL: http://payment-service:8002
-      DELIVERY_SERVICE_URL: http://delivery-service:8004
       MEAL_SERVICE_URL: http://meal-service:8006
-      NOTIFICATION_SERVICE_URL: http://notification-service:8003
+      NOTIFICATION_SERVICE_URL: http://notification-service:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -278,7 +340,9 @@ services:
       - nutmeals-network
 
   ####################################################
-  # Admin CMS Service
+  # Admin CMS Service — needs ADMIN_CMS_ env prefix.
+  # Verifies JWT via RS256 public key, not the shared HS256 secret —
+  # JWT_PUBLIC_KEY left blank; see top-of-file note #8.
   ####################################################
 
   admin_cms_service:
@@ -290,9 +354,20 @@ services:
     ports:
       - "8008:8000"
     environment:
-      <<: *common-env
-      SERVICE_NAME: admin-cms-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      ADMIN_CMS_ENVIRONMENT: local
+      ADMIN_CMS_DEBUG: "true"
+      ADMIN_CMS_DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_admin_cms
+      ADMIN_CMS_REDIS_URL: redis://redis:6379/0
+      ADMIN_CMS_CELERY_BROKER_URL: redis://redis:6379/1
+      ADMIN_CMS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      ADMIN_CMS_JWT_PUBLIC_KEY: ""
+      ADMIN_CMS_JWT_ALGORITHM: RS256
+      ADMIN_CMS_INTERNAL_SERVICE_TOKEN: change_me_internal_token
+      ADMIN_CMS_FINANCE_SERVICE_URL: http://finance-service:8000
+      ADMIN_CMS_ORDERS_SERVICE_URL: http://order-service:8001
+      ADMIN_CMS_LOGISTICS_SERVICE_URL: http://logistics-service:8000
+      ADMIN_CMS_PAYMENTS_SERVICE_URL: http://payment-service:8002
+      ADMIN_CMS_INVENTORY_SERVICE_URL: http://inventory-service:8001
     depends_on:
       postgres:
         condition: service_healthy
@@ -300,7 +375,7 @@ services:
       - nutmeals-network
 
   ####################################################
-  # Catalog Service
+  # Catalog Service — needs CATALOG_ env prefix.
   ####################################################
 
   catalog_service:
@@ -312,9 +387,15 @@ services:
     ports:
       - "8009:8000"
     environment:
-      <<: *common-env
-      SERVICE_NAME: catalog-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      CATALOG_ENVIRONMENT: local
+      CATALOG_DEBUG: "true"
+      CATALOG_DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_catalog
+      CATALOG_REDIS_URL: redis://redis:6379/0
+      CATALOG_CELERY_BROKER_URL: redis://redis:6379/1
+      CATALOG_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CATALOG_JWT_SECRET_KEY: super_secret_jwt_key_change_in_production
+      CATALOG_JWT_ALGORITHM: HS256
+      CATALOG_INVENTORY_SERVICE_URL: http://inventory-service:8001
     depends_on:
       postgres:
         condition: service_healthy
@@ -323,6 +404,7 @@ services:
 
   ####################################################
   # Inventory Service
+  # Actually binds container port 8001 — NOT 8000.
   ####################################################
 
   inventory_service:
@@ -332,11 +414,11 @@ services:
     container_name: inventory-service
     restart: unless-stopped
     ports:
-      - "8010:8000"
+      - "8010:8001"
     environment:
       <<: *common-env
       SERVICE_NAME: inventory-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_inventory
     depends_on:
       postgres:
         condition: service_healthy
@@ -345,6 +427,11 @@ services:
 
   ####################################################
   # CRM Service
+  # Actually binds container port 8005 — NOT 8000.
+  # Own config.py requires DATABASE_URL + SECRET_KEY (no defaults) — both
+  # supplied below. Its AUTH_SERVICE_URL / PRODUCT_SERVICE_URL fields
+  # reference services that don't exist under those names in this stack;
+  # left unwired (see note #8).
   ####################################################
 
   crm_service:
@@ -354,11 +441,15 @@ services:
     container_name: crm-service
     restart: unless-stopped
     ports:
-      - "8011:8000"
+      - "8011:8005"
     environment:
-      <<: *common-env
-      SERVICE_NAME: crm-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_crm
+      SECRET_KEY: super_secret_jwt_key_change_in_production
+      ALGORITHM: HS256
+      REDIS_URL: redis://redis:6379/0
+      ORDER_SERVICE_URL: http://order-service:8001
+      PAYMENT_SERVICE_URL: http://payment-service:8002
+      FINANCE_SERVICE_URL: http://finance-service:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -380,7 +471,7 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: finance-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_finance
     depends_on:
       postgres:
         condition: service_healthy
@@ -388,7 +479,9 @@ services:
       - nutmeals-network
 
   ####################################################
-  # Logistics Service
+  # Logistics Service — needs LOGISTICS_ env prefix.
+  # Verifies JWT via RS256 public key, not the shared HS256 secret —
+  # JWT_PUBLIC_KEY left blank; see top-of-file note #8.
   ####################################################
 
   logistics_service:
@@ -400,9 +493,20 @@ services:
     ports:
       - "8013:8000"
     environment:
-      <<: *common-env
-      SERVICE_NAME: logistics-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      LOGISTICS_ENVIRONMENT: development
+      LOGISTICS_ENFORCE_HTTPS: "false"
+      LOGISTICS_DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_logistics
+      LOGISTICS_REDIS_URL: redis://redis:6379/0
+      LOGISTICS_CELERY_BROKER_URL: redis://redis:6379/1
+      LOGISTICS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      LOGISTICS_DELHIVERY_API_BASE: https://staging-express.delhivery.com
+      LOGISTICS_DELHIVERY_API_TOKEN: changeme
+      LOGISTICS_INDIA_POST_API_BASE: https://api.indiapost.gov.in
+      LOGISTICS_INDIA_POST_API_KEY: changeme
+      LOGISTICS_ORDERS_SERVICE_URL: http://order-service:8001
+      LOGISTICS_INVENTORY_SERVICE_URL: http://inventory-service:8001
+      LOGISTICS_JWT_PUBLIC_KEY: ""
+      LOGISTICS_JWT_ALGORITHM: RS256
     depends_on:
       postgres:
         condition: service_healthy
@@ -411,6 +515,7 @@ services:
 
   ####################################################
   # Manufacturing Service
+  # Actually binds container port 8001 — NOT 8000.
   ####################################################
 
   manufacturing_service:
@@ -420,11 +525,11 @@ services:
     container_name: manufacturing-service
     restart: unless-stopped
     ports:
-      - "8014:8000"
+      - "8014:8001"
     environment:
       <<: *common-env
       SERVICE_NAME: manufacturing-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_manufacturing
     depends_on:
       postgres:
         condition: service_healthy
@@ -432,7 +537,9 @@ services:
       - nutmeals-network
 
   ####################################################
-  # SEO Service
+  # SEO Service — needs SEO_ env prefix.
+  # Verifies JWT via RS256 public key, not the shared HS256 secret —
+  # JWT_PUBLIC_KEY left blank; see top-of-file note #8.
   ####################################################
 
   seo_service:
@@ -444,9 +551,12 @@ services:
     ports:
       - "8015:8000"
     environment:
-      <<: *common-env
-      SERVICE_NAME: seo-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      SEO_ENVIRONMENT: local
+      SEO_DEBUG: "true"
+      SEO_DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_seo
+      SEO_REDIS_URL: redis://redis:6379/0
+      SEO_JWT_PUBLIC_KEY: ""
+      SEO_JWT_ALGORITHM: RS256
     depends_on:
       postgres:
         condition: service_healthy
@@ -468,7 +578,7 @@ services:
     environment:
       <<: *common-env
       SERVICE_NAME: cart-checkout-service
-      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_db
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_cart_checkout
     depends_on:
       postgres:
         condition: service_healthy
@@ -476,7 +586,8 @@ services:
       - nutmeals-network
 
   ####################################################
-  # Security Service
+  # Security Service — needs SECURITY_ env prefix.
+  # Now actually gets a database (previous compose only depended on redis).
   ####################################################
 
   security-service:
@@ -488,17 +599,83 @@ services:
     ports:
       - "8017:8000"
     environment:
-      <<: *common-env
-      SERVICE_NAME: security-service
+      SECURITY_ENVIRONMENT: local
+      SECURITY_DEBUG: "true"
+      SECURITY_DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_security
+      SECURITY_REDIS_URL: redis://redis:6379/0
+      SECURITY_JWT_SECRET: super_secret_jwt_key_change_in_production
+      SECURITY_JWT_ALGORITHM: HS256
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
       - nutmeals-network
 
+  ####################################################
+  # Customer & Commerce Service (previously missing from compose entirely)
+  ####################################################
 
+  customer_commerce_service:
+    build:
+      context: ./customer_commerce_service
+      dockerfile: Dockerfile
+    container_name: customer-commerce-service
+    restart: unless-stopped
+    ports:
+      - "8018:8000"
+    environment:
+      ENVIRONMENT: development
+      DEBUG: "true"
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_customer_commerce
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      JWT_SECRET_KEY: super_secret_jwt_key_change_in_production
+      JWT_ALGORITHM: HS256
+      FINANCE_SERVICE_URL: http://finance-service:8000
+      NOTIFICATION_SERVICE_URL: http://notification-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
 
-    ####################################################
+  ####################################################
+  # Procurement Service (previously missing from compose entirely)
+  ####################################################
+
+  procurement_service:
+    build:
+      context: ./procurement_service
+      dockerfile: Dockerfile
+    container_name: procurement-service
+    restart: unless-stopped
+    ports:
+      - "8019:8000"
+    environment:
+      SERVICE_NAME: procurement-service
+      ENV: development
+      DEBUG: "true"
+      DATABASE_URL: postgresql+asyncpg://postgres:kanni3750@postgres:5432/nutmeals_procurement
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      JWT_SECRET_KEY: super_secret_jwt_key_change_in_production
+      JWT_ALGORITHM: HS256
+      FINANCE_SERVICE_BASE_URL: http://finance-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nutmeals-network
+
+  ####################################################
   # Infrastructure Service (Optional)
   ####################################################
 

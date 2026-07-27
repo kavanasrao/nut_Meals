@@ -1,21 +1,28 @@
-fastapi==0.104.1
-uvicorn==0.24.0
-sqlalchemy[asyncio]==2.0.30
-asyncpg==0.29.0
-alembic==1.13.1
-pydantic==2.5.0
-pydantic-settings==2.1.0
-python-multipart==0.0.9
-bcrypt==4.0.1
-python-jose[cryptography]==3.3.0
-greenlet==3.0.3
-python-dotenv==1.0.0
-httpx==0.25.2
-requests==2.31.0
-aiohttp==3.9.0
-redis==5.0.1
-celery==5.3.4
-python-json-logger==2.0.7
-email-validator==2.1.0
-phonenumbers==8.13.0
-passlib[bcrypt]==1.7.4
+# ==============================================================
+# NutMeals — API Gateway
+# ==============================================================
+# The gateway is a pure HTTP reverse proxy with JWT auth and
+# Redis rate limiting. It has no database, no task queue, and
+# never parses user input — keep dependencies minimal.
+# ==============================================================
+
+# -- Web framework ---------------------------------------------
+fastapi==0.115.0
+uvicorn[standard]==0.30.6        # [standard] includes uvloop + httptools
+
+# -- ASGI / HTTP -----------------------------------------------
+httpx[http2]==0.27.2             # [http2] installs the h2 library
+h2==4.1.0                        # explicit pin — required for HTTP/2 support
+
+# -- Auth ------------------------------------------------------
+python-jose[cryptography]==3.3.0 # JWT decode/verify
+
+# -- Settings --------------------------------------------------
+pydantic==2.7.4
+pydantic-settings==2.3.4         # reads .env via pydantic — replaces python-dotenv
+
+# -- Redis -----------------------------------------------------
+redis==5.0.7                     # includes redis.asyncio
+
+# -- Logging ---------------------------------------------------
+python-json-logger==2.0.7        # structured JSON logs for production
