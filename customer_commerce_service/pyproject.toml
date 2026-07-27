@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80 -v"
+
+[tool.coverage.run]
+omit = ["app/tasks/celery_app.py", "alembic/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

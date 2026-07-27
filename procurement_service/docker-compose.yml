@@ -1,0 +1,122 @@
+# docker-compose.yml — Procurement Service local development stack.
+#
+# This is meant to be merged into (or included from) the top-level
+# nut_meals docker-compose that runs all microservices together. Run
+# standalone with:
+#   docker compose -f docker-compose.yml up --build
+version: "3.9"
+
+services:
+  procurement-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: procurement
+      POSTGRES_PASSWORD: procurement
+      POSTGRES_DB: procurement_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - procurement_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U procurement -d procurement_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nut_meals_net
+
+  procurement-redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - nut_meals_net
+
+  procurement-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://procurement:procurement@procurement-db:5432/procurement_db
+    depends_on:
+      procurement-db:
+        condition: service_healthy
+    networks:
+      - nut_meals_net
+
+  procurement-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8010:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://procurement:procurement@procurement-db:5432/procurement_db
+      REDIS_URL: redis://procurement-redis:6379/0
+      CELERY_BROKER_URL: redis://procurement-redis:6379/1
+      CELERY_RESULT_BACKEND: redis://procurement-redis:6379/2
+      FINANCE_SERVICE_BASE_URL: http://finance-service:8000
+    depends_on:
+      procurement-db:
+        condition: service_healthy
+      procurement-redis:
+        condition: service_healthy
+      procurement-migrate:
+        condition: service_completed_successfully
+    networks:
+      - nut_meals_net
+      # 'finance_net' would be the shared network with the Finance Service
+      # in the umbrella compose file.
+
+  procurement-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=INFO"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://procurement:procurement@procurement-db:5432/procurement_db
+      REDIS_URL: redis://procurement-redis:6379/0
+      CELERY_BROKER_URL: redis://procurement-redis:6379/1
+      CELERY_RESULT_BACKEND: redis://procurement-redis:6379/2
+    depends_on:
+      procurement-db:
+        condition: service_healthy
+      procurement-redis:
+        condition: service_healthy
+    networks:
+      - nut_meals_net
+
+  procurement-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "beat", "--loglevel=INFO"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://procurement:procurement@procurement-db:5432/procurement_db
+      REDIS_URL: redis://procurement-redis:6379/0
+      CELERY_BROKER_URL: redis://procurement-redis:6379/1
+      CELERY_RESULT_BACKEND: redis://procurement-redis:6379/2
+    depends_on:
+      procurement-db:
+        condition: service_healthy
+      procurement-redis:
+        condition: service_healthy
+    networks:
+      - nut_meals_net
+
+volumes:
+  procurement_db_data:
+
+networks:
+  nut_meals_net:
+    driver: bridge
