@@ -68,6 +68,26 @@ class ProductionBatch(Base):
         default=0,
     )
 
+    # Production efficiency (%)
+    yield_percentage: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=0,
+    )
+
+    # Moisture loss during production
+    moisture_loss_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(12, 3),
+        nullable=False,
+        default=0,
+    )
+
+    moisture_loss_percentage: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=0,
+    )
+
     status: Mapped[BatchStatus] = mapped_column(
         SAEnum(BatchStatus, name="batch_status_enum"),
         default=BatchStatus.PLANNED,

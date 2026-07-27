@@ -2,13 +2,23 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes.analytics import router as analytics_router
-from app.api.routes.campaign import router as campaign_router
+# -----------------------
+# Customer Management
+# -----------------------
+from app.api.routes.customer_profile import (
+    router as customer_profile_router,
+)
 from app.api.routes.customer_address import (
     router as customer_address_router,
 )
-from app.api.routes.customer_interaction import (
-    router as customer_interaction_router,
+from app.api.routes.customer_tag import (
+    router as customer_tag_router,
+)
+from app.api.routes.customer_segment import (
+    router as customer_segment_router,
+)
+from app.api.routes.customer_timeline import (
+    router as customer_timeline_router,
 )
 from app.api.routes.customer_note import (
     router as customer_note_router,
@@ -16,27 +26,66 @@ from app.api.routes.customer_note import (
 from app.api.routes.customer_preference import (
     router as customer_preference_router,
 )
-from app.api.routes.customer_profile import (
-    router as customer_profile_router,
+from app.api.routes.customer_interaction import (
+    router as customer_interaction_router,
 )
-from app.api.routes.customer_segment import (
-    router as customer_segment_router,
-)
-from app.api.routes.customer_tag import (
-    router as customer_tag_router,
-)
-from app.api.routes.customer_timeline import (
-    router as customer_timeline_router,
-)
-from app.api.routes.feedback import router as feedback_router
-from app.api.routes.loyalty import router as loyalty_router
-from app.api.routes.reports import router as reports_router
+
+# -----------------------
+# Support
+# -----------------------
 from app.api.routes.support_ticket import (
     router as support_ticket_router,
 )
+
+# -----------------------
+# Campaigns
+# -----------------------
+from app.api.routes.campaign import (
+    router as campaign_router,
+)
+
+# -----------------------
+# Affiliate
+# -----------------------
+from app.api.routes.affiliate import (
+    router as affiliate_router,
+)
+from app.api.routes.affiliate_commission import (
+    router as affiliate_commission_router,
+)
+from app.api.routes.affiliate_payout import (
+    router as affiliate_payout_router,
+)
+from app.api.routes.affiliate_coupon import (
+    router as affiliate_coupon_router,
+)
+
+# -----------------------
+# Loyalty
+# -----------------------
+from app.api.routes.loyalty import (
+    router as loyalty_router,
+)
+
+# -----------------------
+# Feedback
+# -----------------------
+from app.api.routes.feedback import (
+    router as feedback_router,
+)
+
+# -----------------------
+# Analytics & Reports
+# -----------------------
+from app.api.routes.analytics import (
+    router as analytics_router,
+)
+from app.api.routes.reports import (
+    router as reports_router,
+)
+
 from app.core.config import settings
 from app.core.logging import setup_logging
-
 
 setup_logging()
 
@@ -57,10 +106,9 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-
-# -----------------------
+# ==========================================================
 # Customer Management
-# -----------------------
+# ==========================================================
 app.include_router(customer_profile_router)
 app.include_router(customer_address_router)
 app.include_router(customer_tag_router)
@@ -70,29 +118,37 @@ app.include_router(customer_note_router)
 app.include_router(customer_preference_router)
 app.include_router(customer_interaction_router)
 
-# -----------------------
+# ==========================================================
 # Support
-# -----------------------
+# ==========================================================
 app.include_router(support_ticket_router)
 
-# -----------------------
+# ==========================================================
 # Campaigns
-# -----------------------
+# ==========================================================
 app.include_router(campaign_router)
 
-# -----------------------
+# ==========================================================
+# Affiliate Program
+# ==========================================================
+app.include_router(affiliate_router)
+app.include_router(affiliate_commission_router)
+app.include_router(affiliate_payout_router)
+app.include_router(affiliate_coupon_router)
+
+# ==========================================================
 # Loyalty
-# -----------------------
+# ==========================================================
 app.include_router(loyalty_router)
 
-# -----------------------
+# ==========================================================
 # Feedback
-# -----------------------
+# ==========================================================
 app.include_router(feedback_router)
 
-# -----------------------
+# ==========================================================
 # Analytics & Reports
-# -----------------------
+# ==========================================================
 app.include_router(analytics_router)
 app.include_router(reports_router)
 

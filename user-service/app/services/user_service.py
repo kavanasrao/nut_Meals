@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.redis import get_redis
 from app.core.security import hash_password, verify_password
+from app.models.audit_log import AuditAction, UserAuditLog
 from app.models.user import User, UserRole
 from app.schemas.user import (
     ChangePasswordRequest,
@@ -105,14 +106,30 @@ class UserService:
         return result.scalar_one_or_none()
 
     async def update_profile(self, user: User, data: UserProfileUpdate) -> User:
-        if data.name is not None:
+        changed_fields = []
+        if data.name is not None and data.name != user.name:
             user.name = data.name
-        if data.phone is not None:
+            changed_fields.append("name")
+        if data.phone is not None and data.phone != user.phone:
             user.phone = data.phone
-        if data.bio is not None:
+            changed_fields.append("phone")
+        if data.bio is not None and data.bio != user.bio:
             user.bio = data.bio
-        if data.profile_picture is not None:
+            changed_fields.append("bio")
+        if data.profile_picture is not None and data.profile_picture != user.profile_picture:
             user.profile_picture = data.profile_picture
+            changed_fields.append("profile_picture")
+
+        if changed_fields:
+            self.db.add(
+                UserAuditLog(
+                    id=uuid.uuid4(),
+                    user_id=user.id,
+                    action=AuditAction.PROFILE_UPDATE,
+                    description=f"Updated fields: {', '.join(changed_fields)}",
+                    extra_data={"fields": changed_fields},
+                )
+            )
         await self.db.commit()
         await self.db.refresh(user)
         await self._invalidate_cache(str(user.id))
@@ -122,6 +139,14 @@ class UserService:
         if not verify_password(data.current_password, user.password_hash):
             return False
         user.password_hash = hash_password(data.new_password)
+        self.db.add(
+            UserAuditLog(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                action=AuditAction.PASSWORD_CHANGE,
+                description="Password changed by user",
+            )
+        )
         await self.db.commit()
         return True
 
@@ -132,6 +157,14 @@ class UserService:
         if not user:
             return None
         user.is_blocked = True
+        self.db.add(
+            UserAuditLog(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                action=AuditAction.ACCOUNT_BLOCKED,
+                description="Account blocked by admin",
+            )
+        )
         await self.db.commit()
         await self.db.refresh(user)
         await self._invalidate_cache(user_id)
@@ -143,6 +176,14 @@ class UserService:
         if not user:
             return None
         user.is_blocked = False
+        self.db.add(
+            UserAuditLog(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                action=AuditAction.ACCOUNT_UNBLOCKED,
+                description="Account unblocked by admin",
+            )
+        )
         await self.db.commit()
         await self.db.refresh(user)
         await self._invalidate_cache(user_id)

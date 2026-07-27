@@ -24,12 +24,21 @@ class ProductionBatchOut(BaseModel):
     id: UUID
     batch_number: str
     product_id: str
+
     planned_quantity: Decimal
     produced_quantity: Decimal
+
+    # Production efficiency
+    yield_percentage: Decimal
+
+    # Moisture loss
+    moisture_loss_quantity: Decimal
+    moisture_loss_percentage: Decimal
+
     status: BatchStatus
+
     created_at: datetime
 
     model_config = {
         "from_attributes": True,
     }
-    

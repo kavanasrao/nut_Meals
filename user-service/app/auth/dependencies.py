@@ -2,17 +2,23 @@
 
 get_current_user: validates JWT and returns the User ORM object.
 require_active_user: ensures the user is not blocked.
+verify_internal_service: validates the shared internal-service token used
+    by other nut_meals microservices (Order, Logistics, CRM) to call this
+    service's server-to-server endpoints. Distinct from user JWT auth —
+    there is no "current user" on these calls, only a trusted caller.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import decode_token
 from app.models.user import User
@@ -58,3 +64,18 @@ async def require_active_user(user: User = Depends(get_current_user)) -> User:
             detail="Your account has been blocked. Contact support.",
         )
     return user
+
+
+async def verify_internal_service(
+    x_internal_service_token: str | None = Header(default=None),
+) -> None:
+    """Gate service-to-service endpoints (see app/api/routes/internal.py)
+    behind the shared `INTERNAL_SERVICE_TOKEN`. Uses a constant-time
+    comparison to avoid leaking the secret via timing side-channels."""
+    if not x_internal_service_token or not hmac.compare_digest(
+        x_internal_service_token, settings.INTERNAL_SERVICE_TOKEN
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid internal service credentials",
+        )

@@ -17,6 +17,8 @@ from app.db.database import get_db
 
 from app.api.routes.raw_materials import router as raw_material_router
 from app.api.routes.bom import router as bom_router
+from app.api.routes.recipe import router as recipe_router
+from app.api.routes.recipe_item import router as recipe_item_router
 from app.api.routes.production_batches import router as production_batch_router
 from app.api.routes.production_costs import router as production_cost_router
 from app.api.routes.reports import router as reports_router
@@ -73,8 +75,16 @@ app.add_middleware(
 
 app.include_router(raw_material_router, prefix="/api/v1")
 app.include_router(bom_router, prefix="/api/v1")
+
+# Recipe Management
+app.include_router(recipe_router, prefix="/api/v1")
+app.include_router(recipe_item_router, prefix="/api/v1")
+
+# Manufacturing
 app.include_router(production_batch_router, prefix="/api/v1")
 app.include_router(production_cost_router, prefix="/api/v1")
+
+# Reports & Audit
 app.include_router(reports_router, prefix="/api/v1")
 app.include_router(audit_router, prefix="/api/v1")
 

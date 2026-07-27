@@ -23,3 +23,41 @@ from app.models.support_ticket_history import (
     SupportTicketHistory,
 )
 from app.models.support_ticket_note import SupportTicketNote
+
+"""
+CRM Models.
+"""
+
+from .affiliate import Affiliate
+from .affiliate_click import AffiliateClick
+from .affiliate_commission import AffiliateCommission
+from .affiliate_coupon import AffiliateCoupon
+from .affiliate_payout import AffiliatePayout
+from .affiliate_referral import AffiliateReferral
+
+__all__ = [
+    "Affiliate",
+    "AffiliateReferral",
+    "AffiliateClick",
+    "AffiliateCommission",
+    "AffiliatePayout",
+    "AffiliateCoupon",
+    "CustomerAddress",
+    "CustomerAudit",
+    "CustomerFeedback",
+    "CustomerInteraction",
+    "CustomerNote",
+    "CustomerPreference",
+    "CustomerProfile",
+    "CustomerSegment",
+    "CustomerTag",
+    "CustomerTimeline",
+    "Campaign",
+    "CampaignAudience",
+    "CampaignHistory",
+    "LoyaltyTransaction",
+    "SupportTicket",
+    "SupportTicketAttachment",
+    "SupportTicketHistory",
+    "SupportTicketNote",
+]

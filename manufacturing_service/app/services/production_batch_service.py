@@ -4,7 +4,7 @@ Business logic for Production Batch Management.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,13 +43,16 @@ class ProductionBatchService:
             product_id=data.product_id,
             bom_id=data.bom_id,
             planned_quantity=data.planned_quantity,
+            produced_quantity=0,
+            yield_percentage=0,
+            moisture_loss_quantity=0,
+            moisture_loss_percentage=0,
             status=BatchStatus.PLANNED,
         )
 
         self.db.add(batch)
 
         await self.db.commit()
-
         await self.db.refresh(batch)
 
         return batch
@@ -98,7 +101,7 @@ class ProductionBatchService:
             raise ValueError("Batch already started.")
 
         batch.status = BatchStatus.IN_PROGRESS
-        batch.started_at = datetime.utcnow()
+        batch.started_at = datetime.now(timezone.utc)
 
         await self._consume_materials(batch)
 
@@ -122,7 +125,36 @@ class ProductionBatchService:
 
         batch.status = BatchStatus.COMPLETED
         batch.produced_quantity = produced_quantity
-        batch.completed_at = datetime.utcnow()
+        batch.completed_at = datetime.now(timezone.utc)
+
+        # ------------------------------------------------------
+        # Calculate Yield Percentage
+        # ------------------------------------------------------
+        if batch.planned_quantity > 0:
+            batch.yield_percentage = round(
+                (batch.produced_quantity / batch.planned_quantity) * 100,
+                2,
+            )
+        else:
+            batch.yield_percentage = 0
+
+        # ------------------------------------------------------
+        # Calculate Moisture Loss
+        # ------------------------------------------------------
+        batch.moisture_loss_quantity = (
+            batch.planned_quantity - batch.produced_quantity
+        )
+
+        if batch.planned_quantity > 0:
+            batch.moisture_loss_percentage = round(
+                (
+                    batch.moisture_loss_quantity
+                    / batch.planned_quantity
+                ) * 100,
+                2,
+            )
+        else:
+            batch.moisture_loss_percentage = 0
 
         await self.db.commit()
         await self.db.refresh(batch)
@@ -190,4 +222,3 @@ class ProductionBatchService:
             )
 
             self.db.add(consumption)
-            
